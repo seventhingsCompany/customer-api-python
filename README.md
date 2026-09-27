@@ -1,6 +1,8 @@
 # seventhings Python SDK
 
-Python client for the seventhings Customer API (`/customer-api/v1`). It offers the same features as the [Go](https://github.com/SeventhingsCompany/customer-api-go) and [PHP](https://github.com/SeventhingsCompany/customer-api-php) SDKs (v1.4.0) and comes with both a synchronous and an asynchronous client.
+[![PyPI](https://img.shields.io/pypi/v/seventhings-customer-api)](https://pypi.org/project/seventhings-customer-api/) [![CI](https://github.com/seventhingsCompany/customer-api-python/actions/workflows/ci.yml/badge.svg)](https://github.com/seventhingsCompany/customer-api-python/actions/workflows/ci.yml)
+
+Python client for the seventhings Customer API (`/customer-api/v1`). It offers the same features as the [Go](https://github.com/seventhingsCompany/customer-api-go) and [PHP](https://github.com/seventhingsCompany/customer-api-php) SDKs (v1.4.0) and comes with both a synchronous and an asynchronous client.
 
 - Python 3.10+
 - The only runtime dependency is [`httpx`](https://www.python-httpx.org/)
@@ -9,10 +11,12 @@ Python client for the seventhings Customer API (`/customer-api/v1`). It offers t
 ## Installation
 
 ```sh
-pip install "git+ssh://git@github.com/SeventhingsCompany/customer-api-python.git@v1.4.0"
+pip install seventhings-customer-api
 # or
-uv add "seventhings-customer-api @ git+ssh://git@github.com/SeventhingsCompany/customer-api-python.git@v1.4.0"
+uv add seventhings-customer-api
 ```
+
+The import name is `seventhings`.
 
 ## Quick Start
 
@@ -360,7 +364,7 @@ scripts/run-integration.sh            # or: uv run pytest -m integration
 scripts/run-integration.sh -k person  # forward pytest args
 ```
 
-[`examples/demo/`](examples/demo/) walks through the SDK end to end and uses the same environment variables.
+[`examples/demo/`](https://github.com/seventhingsCompany/customer-api-python/tree/main/examples/demo) walks through the SDK end to end and uses the same environment variables.
 
 ## License
 
