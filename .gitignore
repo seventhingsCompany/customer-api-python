@@ -9,5 +9,5 @@ build/
 .ruff_cache/
 .DS_Store
 
-# Local credentials for integration tests / examples/demo.py.
+# Local credentials for integration tests / examples/demo/demo.py.
 .env

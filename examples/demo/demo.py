@@ -4,7 +4,7 @@ Creates (and deletes again) a few demo objects, a task, a file and a person.
 
     export SEVENTHINGS_BASE_URL=... SEVENTHINGS_USERNAME=... \\
            SEVENTHINGS_PASSWORD=... SEVENTHINGS_CLIENT_ID=...
-    uv run python examples/demo.py
+    uv run python examples/demo/demo.py
 """
 
 from __future__ import annotations

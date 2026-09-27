@@ -360,7 +360,7 @@ scripts/run-integration.sh            # or: uv run pytest -m integration
 scripts/run-integration.sh -k person  # forward pytest args
 ```
 
-`examples/demo.py` walks through the SDK end to end and uses the same environment variables.
+[`examples/demo/`](examples/demo/) walks through the SDK end to end and uses the same environment variables.
 
 ## License
 
