@@ -14,6 +14,7 @@ GO_PARITY = {
     "Ping": "ping",
     "Login": "auth.login",
     "LoginSSO": "auth.login_sso",
+    "LoginAuthorizationCode": "auth.login_authorization_code",
     "Refresh": "auth.refresh",
     "RevokeTokens": "auth.revoke_tokens",
     "Token": "token",
@@ -75,6 +76,7 @@ GO_PARITY = {
     "FileUpload": "files.upload",
     "FileGetData": "files.get_data",
     "FileGetThumbnail": "files.get_thumbnail",
+    "FileGetThumbnailWithSize": "files.get_thumbnail",
     "TasksList": "tasks.list",
     "TaskCreate": "tasks.create",
     "TaskGet": "tasks.get",
@@ -109,6 +111,11 @@ GO_PARITY = {
     "CircularityHubOrderUpdate": "circularity_hub.update_order",
     "ReportTemplatesList": "reports.list_templates",
     "ReportCreate": "reports.create",
+    "CatalogItemsList": "catalog_items.list",
+    "CatalogItemGet": "catalog_items.get",
+    "CatalogItemCreate": "catalog_items.create",
+    "CatalogItemUpdate": "catalog_items.update",
+    "CatalogItemDelete": "catalog_items.delete",
 }
 
 
@@ -146,6 +153,7 @@ SERVICES = [
     "field_definitions",
     "circularity_hub",
     "reports",
+    "catalog_items",
 ]
 
 

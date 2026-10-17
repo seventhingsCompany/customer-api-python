@@ -13,7 +13,7 @@ class Person:
     """A person record.
 
     Persons have a tenant-specific schema; the well-known fields are exposed as
-    attributes and the complete record is available as ``fields``.
+    attributes and the complete flat record is available as ``fields``.
     """
 
     uuid: str
@@ -36,26 +36,13 @@ class Person:
 
     @classmethod
     def from_dict(cls, data: Any) -> Person:
-        """Decode a flat person record or a ``{uuid, fields}`` envelope.
-
-        The UUID is taken from ``person_uuid`` and falls back to the top-level ``uuid``.
-        """
-        m = d.obj(data, "person")
-        top_uuid = m.get("uuid")
-        if top_uuid is not None and not isinstance(top_uuid, str):
-            raise DecodeError("person uuid must be a string")
-        src = m
-        inner = m.get("fields")
-        if top_uuid and inner is not None:
-            if not isinstance(inner, dict):
-                raise DecodeError("person fields must be a JSON object")
-            src = inner
+        """Decode a flat person record; the UUID comes from ``person_uuid``."""
+        src = d.obj(data, "person")
         person_uuid = src.get("person_uuid")
         if person_uuid is not None and not isinstance(person_uuid, str):
             raise DecodeError("person person_uuid must be a string")
-        uuid = person_uuid or top_uuid or ""
         return cls(
-            uuid=uuid,
+            uuid=person_uuid or "",
             id=d.integer(src.get("id")),
             user_uuid=d.string(src.get("user_uuid")),
             email=d.string(src.get("email")),

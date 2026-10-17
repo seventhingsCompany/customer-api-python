@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -18,6 +18,7 @@ T = TypeVar("T")
 API_PREFIX = "/customer-api/v1"
 USER_AGENT = f"seventhings-customer-api-python/{__version__}"
 JSON = "application/json"
+FORM = "application/x-www-form-urlencoded"
 
 
 class _Unset:
@@ -63,6 +64,7 @@ class Operation(Generic[T]):
     parse: Callable[[Response], T]
     query: str = ""
     json: Any = UNSET
+    form: Mapping[str, str] | None = None
     files: Mapping[str, Any] | None = None
     accept: str | None = JSON
     authenticated: bool = True
@@ -103,6 +105,9 @@ def build_request(
     if op.json is not UNSET:
         content = encode_json(op.json)
         headers["Content-Type"] = JSON
+    elif op.form is not None:
+        content = urlencode(op.form).encode("ascii")
+        headers["Content-Type"] = FORM
 
     return http.build_request(
         op.method,
@@ -117,7 +122,7 @@ def to_response(resp: httpx.Response) -> Response:
     """Convert an httpx response, raising APIError for status >= 400."""
     if resp.status_code >= 400:
         status = f"{resp.status_code} {resp.reason_phrase}".strip()
-        raise APIError(resp.status_code, status, resp.text)
+        raise APIError(resp.status_code, status, resp.text, httpx.Headers(resp.headers))
     return Response(resp.status_code, resp.headers, resp.content)
 
 

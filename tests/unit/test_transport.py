@@ -8,7 +8,6 @@ import pytest
 from seventhings import APIError, AsyncClient, Client, DecodeError, NetworkError
 from seventhings._operations import (
     int_from_location_id,
-    unwrap_resource_fields,
     uuid_from_location,
 )
 from seventhings._transport import Response
@@ -161,19 +160,3 @@ def test_int_from_location_id() -> None:
         int_from_location_id(_resp({}))
     with pytest.raises(DecodeError):
         int_from_location_id(_resp({"Location-Id": "abc"}))
-
-
-def test_unwrap_resource_fields() -> None:
-    assert unwrap_resource_fields({"uuid": "u", "fields": {"name": "A"}}) == {
-        "name": "A",
-        "uuid": "u",
-    }
-    # An inner uuid wins over the envelope uuid.
-    assert unwrap_resource_fields({"uuid": "u", "fields": {"uuid": "inner"}}) == {"uuid": "inner"}
-    flat = {"uuid": "u", "name": "A"}
-    assert unwrap_resource_fields(flat) is flat
-    # Not an envelope unless uuid is a string and fields an object.
-    odd = {"uuid": 5, "fields": {"a": 1}}
-    assert unwrap_resource_fields(odd) is odd
-    odd2 = {"uuid": "u", "fields": "x"}
-    assert unwrap_resource_fields(odd2) is odd2

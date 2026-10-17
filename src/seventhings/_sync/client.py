@@ -12,6 +12,7 @@ import httpx
 
 from .. import _operations as ops
 from .._pagination import DEFAULT_PAGE_SIZE, options_for_page
+from .._rate_limit import DEFAULT_REQUESTS_PER_MINUTE, RateLimiter
 from .._transport import (
     JSON,
     UNSET,
@@ -24,6 +25,7 @@ from .._transport import (
 from .._transport import base_url as api_base_url
 from ..errors import NetworkError
 from ..models.auth import PingResponse, TokenResponse
+from ..models.catalog_items import CatalogItem, CatalogItemListResponse
 from ..models.circularity_hub import AddObjectEntry, CircularityHubOrder, FilterObject
 from ..models.enums import AssetTrackingTemplate, SSOAppTarget, SSOProviderName, TaskStatus
 from ..models.field_definitions import (
@@ -79,6 +81,11 @@ class Client:
     ``base_url`` is the instance URL, e.g. ``https://example.seventhings.com``.
     Pass ``http_client`` to use your own ``httpx.Client`` (it is not closed
     by this client); otherwise one is created with the given ``timeout``.
+
+    Every request (including authentication, uploads and downloads) is paced to
+    ``rate_limit`` requests per minute, evenly spaced without bursts; the first
+    request is immediate. Pass ``rate_limit=0`` (or None) to disable throttling.
+    Separate clients do not share a limit, and HTTP 429 answers are not retried.
     """
 
     def __init__(
@@ -89,8 +96,10 @@ class Client:
         client_id: str | None = None,
         http_client: httpx.Client | None = None,
         timeout: float | httpx.Timeout | None = DEFAULT_TIMEOUT,
+        rate_limit: int | None = DEFAULT_REQUESTS_PER_MINUTE,
     ) -> None:
         self._base_url = api_base_url(base_url)
+        self._rate_limiter = RateLimiter(rate_limit)
         self.token = token
         self.client_id = client_id
         self._owns_http = http_client is None
@@ -108,6 +117,7 @@ class Client:
         self.field_definitions = FieldDefinitionsService(self)
         self.circularity_hub = CircularityHubService(self)
         self.reports = ReportsService(self)
+        self.catalog_items = CatalogItemsService(self)
 
     @classmethod
     def with_credentials(
@@ -119,9 +129,10 @@ class Client:
         *,
         http_client: httpx.Client | None = None,
         timeout: float | httpx.Timeout | None = DEFAULT_TIMEOUT,
+        rate_limit: int | None = DEFAULT_REQUESTS_PER_MINUTE,
     ) -> Client:
         """Create a client and log in with username/password."""
-        client = cls(base_url, http_client=http_client, timeout=timeout)
+        client = cls(base_url, http_client=http_client, timeout=timeout, rate_limit=rate_limit)
         try:
             client.auth.login(username, password, client_id)
         except BaseException:
@@ -151,6 +162,7 @@ class Client:
 
     def _send(self, op: Operation[T]) -> T:
         request = build_request(self._http, self._base_url, self.token, op)
+        self._rate_limiter.wait()
         try:
             resp = self._http.send(request)
         except httpx.TransportError as exc:
@@ -212,6 +224,19 @@ class AuthService(_Service):
         self._client.client_id = client_id
         return self._store(ops.login_sso(provider, auth_code, client_id, app_target))
 
+    def login_authorization_code(
+        self, code: str, code_verifier: str, redirect_uri: str, client_id: str
+    ) -> TokenResponse:
+        """Exchange an OAuth 2.1 authorization code using PKCE.
+
+        ``redirect_uri`` must match the one used for authorization and
+        ``code_verifier`` is the original verifier behind the request's challenge.
+        """
+        self._client.client_id = client_id
+        return self._store(
+            ops.login_authorization_code(code, code_verifier, redirect_uri, client_id)
+        )
+
     def refresh(self, refresh_token: str) -> TokenResponse:
         """Exchange a refresh token, using the client ID from the last login."""
         return self._store(ops.refresh(refresh_token, self._client.client_id or ""))
@@ -225,7 +250,7 @@ class ObjectsService(_Service):
     """Objects (assets). Records are schema-free field maps."""
 
     def list(self, opts: ListOptions | None = None) -> builtins.list[dict[str, Any]]:
-        return self._send(ops.resource_list("objects", opts, unwrap=False))
+        return self._send(ops.resource_list("objects", opts))
 
     def all(self, opts: ListOptions | None = None) -> Iterator[Fields]:
         """Iterate every object across all pages (``opts.page`` is ignored)."""
@@ -244,7 +269,7 @@ class ObjectsService(_Service):
         return self._send(ops.resource_create("object", fields))
 
     def get(self, uuid: str) -> dict[str, Any]:
-        return self._send(ops.resource_get("object", uuid, unwrap=False))
+        return self._send(ops.resource_get("object", uuid))
 
     def get_by_barcode(self, barcode: str) -> dict[str, Any]:
         """Look up an object by barcode (archived objects included)."""
@@ -276,13 +301,13 @@ class ObjectsService(_Service):
 
 
 class _SpaceService(_Service):
-    """Rooms and locations share one shape; ``{uuid, fields}`` envelopes are flattened."""
+    """Rooms and locations share one shape: flat field maps."""
 
     _plural: str
     _singular: str
 
     def list(self, opts: ListOptions | None = None) -> builtins.list[dict[str, Any]]:
-        return self._send(ops.resource_list(self._plural, opts, unwrap=True))
+        return self._send(ops.resource_list(self._plural, opts))
 
     def all(self, opts: ListOptions | None = None) -> Iterator[Fields]:
         """Iterate every record across all pages (``opts.page`` is ignored)."""
@@ -301,11 +326,11 @@ class _SpaceService(_Service):
         return self._send(ops.resource_create(self._singular, fields))
 
     def get(self, uuid: str) -> dict[str, Any]:
-        return self._send(ops.resource_get(self._singular, uuid, unwrap=True))
+        return self._send(ops.resource_get(self._singular, uuid))
 
     def patch(self, uuid: str, fields: Mapping[str, Any]) -> dict[str, Any] | None:
         """Update fields; returns the updated record, or None if the API sent no body."""
-        return self._send(ops.resource_patch_unwrapped(self._singular, uuid, fields))
+        return self._send(ops.resource_patch_returning(self._singular, uuid, fields))
 
     def delete(self, uuid: str) -> None:
         self._send(ops.resource_delete(self._singular, uuid))
@@ -406,10 +431,17 @@ class FilesService(_Service):
         return self._send(ops.file_upload(filename, data))
 
     def get_data(self, uuid: str) -> bytes:
-        return self._send(ops.file_data(uuid, thumbnail=False))
+        return self._send(ops.file_data(uuid))
 
-    def get_thumbnail(self, uuid: str) -> bytes:
-        return self._send(ops.file_data(uuid, thumbnail=True))
+    def get_thumbnail(
+        self, uuid: str, *, width: int | None = None, height: int | None = None
+    ) -> bytes:
+        """Download a thumbnail: 150 x 100 by default, or fitted within width x height.
+
+        Custom sizes need both dimensions (1-2000 pixels) and keep the aspect ratio.
+        The API creates and caches each new size and may reject excess sizes with 422.
+        """
+        return self._send(ops.file_thumbnail(uuid, width, height))
 
 
 class TasksService(_Service):
@@ -424,7 +456,7 @@ class TasksService(_Service):
         return self._send(ops.task_create(task))
 
     def update(self, uuid: str, task: UpdateTask) -> None:
-        """Replace a task (PUT)."""
+        """Replace a task (PUT). ``task.reminders=None`` leaves them out of the request."""
         self._send(ops.task_update(uuid, task))
 
     def delete(self, uuid: str) -> None:
@@ -456,11 +488,19 @@ class RentalsService(_Service):
         return self._send(ops.rental_get(uuid))
 
     def create(self, rental: CreateRentalCase) -> str:
-        """Create a rental case and return its UUID."""
+        """Create a rental case and return its UUID.
+
+        Raises RentalCaseRenterRequiredError, without sending a request, if
+        ``rental.renter`` is None.
+        """
         return self._send(ops.rental_create(rental))
 
     def update(self, uuid: str, rental: UpdateRentalCase) -> None:
-        """Replace a rental case (PUT)."""
+        """Replace a rental case (PUT) with the complete state, not a partial patch.
+
+        Raises RentalCaseRenterRequiredError, without sending a request, if
+        ``rental.renter`` is None.
+        """
         self._send(ops.rental_update(uuid, rental))
 
     def delete(self, uuid: str) -> None:
@@ -565,6 +605,41 @@ class ReportsService(_Service):
     def create(self, report: CreateReport) -> bytes:
         """Render a report and return the PDF bytes."""
         return self._send(ops.report_create(report))
+
+
+class CatalogItemsService(_Service):
+    """Product catalog. Requires the catalog feature and matching rights on the instance."""
+
+    def list(self, opts: ListOptions | None = None) -> CatalogItemListResponse:
+        return self._send(ops.catalog_items_list(opts))
+
+    def all(self, opts: ListOptions | None = None) -> Iterator[CatalogItem]:
+        """Iterate every catalog item across all pages (``opts.page`` is ignored)."""
+
+        def fetch(page: int) -> builtins.list[CatalogItem]:
+            return (self.list(options_for_page(opts, ListOptions, page))).items
+
+        for item in _walk(fetch, _per_page(opts)):
+            yield item
+
+    def get(self, uuid: str) -> CatalogItem:
+        return self._send(ops.catalog_item_get(uuid))
+
+    def create(self, fields: Mapping[str, Any]) -> str:
+        """Create a catalog item and return its UUID."""
+        return self._send(ops.catalog_item_create(fields))
+
+    def update(self, uuid: str, fields: Mapping[str, Any]) -> None:
+        """Replace all fields (PUT): missing fields are emptied.
+
+        Server-maintained fields are ignored, so ``get(...).fields`` can be sent
+        back. Objects created from the item are not changed.
+        """
+        self._send(ops.catalog_item_update(uuid, fields))
+
+    def delete(self, uuid: str) -> None:
+        """Delete a catalog item; objects created from it stay intact."""
+        self._send(ops.catalog_item_delete(uuid))
 
 
 def _per_page(opts: ListOptions | UserListOptions | PersonListOptions | None) -> int:

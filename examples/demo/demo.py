@@ -1,22 +1,33 @@
 """End-to-end walkthrough of the SDK against a live seventhings instance.
 
-Creates (and deletes again) a few demo objects, a task, a file and a person.
+Creates (and deletes again) a few demo objects, a task, a person, a catalog
+item and a timed rental. Uploaded files stay: the API has no file-delete endpoint.
 
     export SEVENTHINGS_BASE_URL=... SEVENTHINGS_USERNAME=... \\
            SEVENTHINGS_PASSWORD=... SEVENTHINGS_CLIENT_ID=...
-    uv run python examples/demo/demo.py
+    uv run python examples/demo/demo.py [--rate-limit N]
+
+Set SEVENTHINGS_AUTH_CODE, SEVENTHINGS_CODE_VERIFIER and SEVENTHINGS_REDIRECT_URI
+to log in with an OAuth authorization code + PKCE instead of username/password.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
+import struct
 import sys
 import time
+import zlib
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, NoReturn
 
-from seventhings import APIError, Client
+from seventhings import DEFAULT_REQUESTS_PER_MINUTE, APIError, Client
 from seventhings.models import (
     AssetTrackingTemplate,
+    CreateRentalCase,
     CreateReport,
     CreateTask,
     Fields,
@@ -25,27 +36,68 @@ from seventhings.models import (
     HistoryResponse,
     ListOptions,
     PersonListOptions,
+    RentalCase,
+    RentalCaseReferenceInput,
+    RentalCaseRenter,
+    RenterType,
     SortDirection,
     TaskReferenceInput,
     TaskStatus,
     TimeInterval,
     TimeIntervalUnit,
+    UpdateRentalCase,
+    UpdateTask,
     UserSortOrder,
+    eq,
     like,
 )
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--rate-limit",
+        type=int,
+        default=DEFAULT_REQUESTS_PER_MINUTE,
+        help="requests per minute per client (0 disables throttling)",
+    )
+    args = parser.parse_args()
     base_url = require_env("SEVENTHINGS_BASE_URL")
-    username = require_env("SEVENTHINGS_USERNAME")
-    password = require_env("SEVENTHINGS_PASSWORD")
     client_id = require_env("SEVENTHINGS_CLIENT_ID")
 
-    with Client(base_url) as c:
+    try:
+        run(base_url, client_id, args.rate_limit)
+    except APIError as exc:
+        delay = exc.retry_after() if exc.is_rate_limited else None
+        if delay is not None:
+            pf("Rate", f"HTTP 429: retry no earlier than {delay} from now; no automatic retry")
+        fail(f"ERROR: {exc}")
+
+
+def run(base_url: str, client_id: str, rate_limit: int) -> None:
+    with Client(base_url, rate_limit=rate_limit) as c:
         # -- Auth ---------------------------------------------------------------
         section("Auth", "Logging in…")
-        tok = c.auth.login(username, password, client_id)
-        pf("Auth", f"Logged in — user_id={tok.user_id}, token={tok.access_token[:20]}…")
+        code = os.environ.get("SEVENTHINGS_AUTH_CODE")
+        if code:
+            tok = c.auth.login_authorization_code(
+                code,
+                require_env("SEVENTHINGS_CODE_VERIFIER"),
+                require_env("SEVENTHINGS_REDIRECT_URI"),
+                client_id,
+            )
+            pf("Auth", "Using OAuth authorization code + PKCE")
+        else:
+            tok = c.auth.login(
+                require_env("SEVENTHINGS_USERNAME"),
+                require_env("SEVENTHINGS_PASSWORD"),
+                client_id,
+            )
+        pf("Auth", f"Logged in — user_id={tok.user_id}")
+        if rate_limit > 0:
+            pf("Rate", f"Limit: {rate_limit} requests/minute, evenly spaced; shared by all calls")
+        else:
+            pf("Rate", "Request throttling disabled")
 
         # -- Objects ------------------------------------------------------------
         section("Objects", "Listing objects…")
@@ -168,16 +220,35 @@ def main() -> None:
         )
         pf("Tasks", f"Created reference object {task_obj_uuid}")
 
+        deadline = (date.today() + timedelta(days=365)).isoformat()
+        task_refs = [TaskReferenceInput(task_obj_uuid)]
+        # Reminders are left out (None); notify=False avoids notifying the assignee.
         task_uuid = c.tasks.create(
             CreateTask(
                 title="SDK Demo Task",
-                deadline="2026-12-31",
+                deadline=deadline,
                 assignees=[me.uuid],
-                references=[TaskReferenceInput(task_obj_uuid)],
-                reminders=[TimeInterval(TimeIntervalUnit.DAYS, 1)],
+                references=task_refs,
+                notify=False,
             )
         )
         pf("Tasks", f"Created task {task_uuid} referencing object {task_obj_uuid}")
+        for reminders in ([TimeInterval(TimeIntervalUnit.DAYS, 0)], []):
+            c.tasks.update(
+                task_uuid,
+                UpdateTask(
+                    title="SDK Demo Task",
+                    deadline=deadline,
+                    assignees=[me.uuid],
+                    references=task_refs,
+                    reminders=reminders,
+                    notify=False,
+                ),
+            )
+            task = c.tasks.get(task_uuid)
+            if task.reminders != reminders:
+                fail(f"[Tasks] Unexpected reminders: {task.reminders}")
+            pf("Tasks", f"Verified reminders: {task.reminders} (empty disables reminders)")
 
         c.tasks.update_status(task_uuid, TaskStatus.CLOSED)
         pf("Tasks", "Updated task status to closed")
@@ -231,6 +302,11 @@ def main() -> None:
         pf("Persons", f"Deleted person {person_uuid}")
         expect_not_found("Persons", lambda: c.persons.get(person_uuid))
 
+        # -- New API features (temporary resources, cleaned up on error) -------
+        demo_catalog(c)
+        demo_timed_rental(c, me.uuid)
+        demo_thumbnail(c)
+
         # -- History of existing resources -------------------------------------
         section("History", "Reading history for existing resources…")
         sample = ListOptions(page=1, per_page=1)
@@ -264,6 +340,162 @@ def main() -> None:
         pf("Auth", "Tokens revoked")
 
     print("\nDone — all steps completed successfully.")
+
+
+def demo_catalog(c: Client) -> None:
+    section("Catalog", "Creating a temporary catalog item…")
+    name = f"SDK Demo Catalog {time.time_ns()}"
+    try:
+        uuid = c.catalog_items.create({"catalog_object_inventory_name": name})
+    except APIError as exc:
+        if exc.is_forbidden:
+            pf("Catalog", "Skipped: product catalog feature or create permission unavailable")
+            return
+        raise
+    with cleanup(lambda: c.catalog_items.delete(uuid)) as done:
+        item = c.catalog_items.get(uuid)
+        if item.uuid != uuid or item.fields.get("catalog_object_inventory_name") != name:
+            fail("[Catalog] create/read mismatch")
+        # PUT replaces the entire state: send the read field map back, not a patch.
+        item.fields["catalog_object_inventory_name"] = name + " updated"
+        c.catalog_items.update(uuid, item.fields)
+        item = c.catalog_items.get(uuid)
+        if item.fields.get("catalog_object_inventory_name") != name + " updated":
+            fail("[Catalog] update/read mismatch")
+        page = c.catalog_items.list(
+            ListOptions(page=1, per_page=5).where(
+                eq("catalog_object_inventory_name", name + " updated")
+            )
+        )
+        if [i.uuid for i in page.items] != [uuid]:
+            fail("[Catalog] filtered list did not return the temporary item")
+        pf("Catalog", f"Verified create, get, PUT and filtered list — total={page.total}")
+        c.catalog_items.delete(uuid)
+        done()
+        expect_not_found("Catalog", lambda: c.catalog_items.get(uuid))
+
+
+def demo_timed_rental(c: Client, user_uuid: str) -> None:
+    section("Rentals", "Creating and updating a timed rental…")
+    object_uuid = c.objects.create(
+        {"inventory_name": "SDK Demo Rental Target", "barcode": f"SDK-RENTAL-{time.time_ns()}"}
+    )
+    with cleanup(lambda: c.objects.delete(object_uuid)):
+        # A future date with a non-UTC offset demonstrates UTC normalization.
+        day = date.today() + timedelta(days=365)
+        start = datetime(day.year, day.month, day.day, 10, tzinfo=timezone(timedelta(hours=2)))
+        refs = [RentalCaseReferenceInput(object_uuid)]
+        # Supply a renter: the current server returns 500 when it is omitted.
+        renter = RentalCaseRenter(RenterType.PLAIN, "SDK Demo")
+        uuid = c.rentals.create(
+            CreateRentalCase(
+                title="SDK Demo Timed Rental",
+                renter=renter,
+                references=refs,
+                is_full_day=False,
+                issue_at=start.isoformat(),
+                due_at=(start + timedelta(hours=2)).isoformat(),
+                issue_date=day.isoformat(),
+                due_date=day.isoformat(),
+                responsible_user_uuid=user_uuid,
+            )
+        )
+        with cleanup(lambda: c.rentals.delete(uuid)):
+            rental = c.rentals.get(uuid)
+            verify_rental_times(rental, start, start + timedelta(hours=2))
+            pf("Rentals", f"Verified timed rental {rental.issue_at} → {rental.due_at} (exclusive)")
+            # Updates are full replacements: send the complete state.
+            update = UpdateRentalCase(
+                title="SDK Demo Timed Rental updated",
+                renter=renter,
+                references=refs,
+                is_full_day=False,
+                issue_at=start.isoformat(),
+                due_at=(start + timedelta(hours=3)).isoformat(),
+                issue_date=day.isoformat(),
+                due_date=day.isoformat(),
+                responsible_user_uuid=user_uuid,
+            )
+            c.rentals.update(uuid, update)
+            verify_rental_times(c.rentals.get(uuid), start, start + timedelta(hours=3))
+            full_day = UpdateRentalCase(
+                title=update.title,
+                renter=renter,
+                references=refs,
+                is_full_day=True,
+                issue_date=day.isoformat(),
+                due_date=(day + timedelta(days=1)).isoformat(),
+                responsible_user_uuid=user_uuid,
+            )
+            c.rentals.update(uuid, full_day)
+            rental = c.rentals.get(uuid)
+            if not rental.is_full_day or rental.issue_at or rental.due_at:
+                fail("[Rentals] full-day conversion did not clear rental times")
+            pf("Rentals", "Verified extended return time and conversion to full-day")
+    pf("Rentals", "Cleaned up rental and object")
+
+
+def verify_rental_times(rental: RentalCase, issue: datetime, due: datetime) -> None:
+    if rental.is_full_day or rental.issue_at is None or rental.due_at is None:
+        fail("[Rentals] expected a timed rental with both timestamps")
+    for raw, want in ((rental.issue_at, issue), (rental.due_at, due)):
+        got = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+        if got != want:
+            fail(f"[Rentals] timestamp {raw} does not match {want.isoformat()}")
+
+
+def demo_thumbnail(c: Client) -> None:
+    section("Files", "Uploading an image and verifying a custom thumbnail…")
+    uuid = c.files.upload(f"sdk-demo-thumbnail-{time.time_ns()}.png", png(640, 480))
+    pf("Files", f"Uploaded image {uuid}; it remains because the API has no delete endpoint")
+    data = c.files.get_thumbnail(uuid, width=320, height=240)
+    if image_size(data) != (320, 240):
+        fail(f"[Files] thumbnail dimensions = {image_size(data)}, want (320, 240)")
+    if c.files.get_thumbnail(uuid, width=320, height=240) != data:
+        fail("[Files] cached thumbnail differs from first response")
+    pf("Files", f"Verified 320x240 thumbnail and cached response ({len(data)} bytes)")
+
+
+@contextmanager
+def cleanup(remove: Callable[[], object]) -> Iterator[Callable[[], None]]:
+    """Run ``remove`` on exit (also on errors) unless the yielded ``done()`` was called."""
+    pending = [remove]
+    try:
+        yield pending.clear
+    finally:
+        for fn in pending:
+            fn()
+
+
+def png(width: int, height: int) -> bytes:
+    """A minimal solid-colour RGB PNG."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = struct.pack(">I", zlib.crc32(kind + data))
+        return struct.pack(">I", len(data)) + kind + data + crc
+
+    row = b"\x00" + bytes((80, 140, 200)) * width
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(row * height))
+        + chunk(b"IEND", b"")
+    )
+
+
+def image_size(data: bytes) -> tuple[int, int]:
+    """(width, height) of a PNG or JPEG image."""
+    if data.startswith(b"\x89PNG"):
+        width, height = struct.unpack(">II", data[16:24])
+        return width, height
+    i = 2
+    while data.startswith(b"\xff\xd8") and i + 9 <= len(data):
+        marker, length = data[i + 1], struct.unpack(">H", data[i + 2 : i + 4])[0]
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            height, width = struct.unpack(">HH", data[i + 5 : i + 9])
+            return width, height
+        i += 2 + length
+    fail("[Files] thumbnail is neither a PNG nor a JPEG")
 
 
 def print_history(resource: str, page: HistoryResponse[Any]) -> None:

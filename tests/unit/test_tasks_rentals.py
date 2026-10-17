@@ -89,7 +89,11 @@ def test_rental_crud(h: Harness) -> None:
     assert h.call(lambda c: c.rentals.create(create)) == "r-1"
     assert h.call(lambda c: c.rentals.get("r-1")).uuid == "r-1"
     update = UpdateRentalCase(
-        title="Laptop 2", renter=None, issue_date="i", due_date="d", responsible_user_uuid="u"
+        title="Laptop 2",
+        renter=RentalCaseRenter(RenterType.PLAIN, "Bob"),
+        issue_date="i",
+        due_date="d",
+        responsible_user_uuid="u",
     )
     h.call(lambda c: c.rentals.update("r-1", update))
     h.call(lambda c: c.rentals.delete("r-1"))

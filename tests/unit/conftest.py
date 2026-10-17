@@ -29,6 +29,7 @@ class Harness:
         self._responses: list[httpx.Response] = []
         self.token: str | None = TOKEN
         self.client_id: str | None = None
+        self.rate_limit: int | None = 0
 
     # -- responses ---------------------------------------------------------
 
@@ -64,6 +65,7 @@ class Harness:
                 token=self.token,
                 client_id=self.client_id,
                 http_client=httpx.Client(transport=transport),
+                rate_limit=self.rate_limit,
             ) as c:
                 return fn(c)
 
@@ -73,6 +75,7 @@ class Harness:
                 token=self.token,
                 client_id=self.client_id,
                 http_client=httpx.AsyncClient(transport=transport),
+                rate_limit=self.rate_limit,
             ) as c:
                 return await fn(c)
 

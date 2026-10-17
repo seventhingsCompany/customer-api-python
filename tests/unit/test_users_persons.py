@@ -43,8 +43,8 @@ def test_persons_list_and_count(h: Harness) -> None:
     assert h.path(1) == "/persons/count"
 
 
-def test_person_get_wrapped(h: Harness) -> None:
-    h.respond(json_body={"uuid": "p-1", "fields": {"id": 7, "email": "e", "cost": "C"}})
+def test_person_get(h: Harness) -> None:
+    h.respond(json_body={"person_uuid": "p-1", "id": 7, "email": "e", "cost": "C"})
     h.respond(json_body={"person_uuid": "p-2", "id": 8})
     p = h.call(lambda c: c.persons.get("p-1"))
     assert (p.uuid, p.id, p.fields["cost"]) == ("p-1", 7, "C")
