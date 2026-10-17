@@ -47,7 +47,7 @@ class APIError(SeventhingsError):
         if value.isascii() and value.isdigit():
             try:
                 return timedelta(seconds=int(value))
-            except OverflowError:
+            except (OverflowError, ValueError):  # ValueError: over the int digit limit
                 return None
         try:
             date = parsedate_to_datetime(value)

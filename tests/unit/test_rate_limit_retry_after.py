@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from itertools import pairwise
 from typing import Any
 
 import httpx
@@ -84,6 +87,25 @@ def test_limiter_no_wait_after_idle() -> None:
     assert clock.sleeps == []
 
 
+def test_sync_limiter_spaces_concurrent_threads() -> None:
+    limiter = RateLimiter(600)  # 100 ms apart, real time
+    admitted: list[float] = []
+    lock = threading.Lock()
+
+    def worker() -> None:
+        limiter.wait()
+        with lock:
+            admitted.append(time.monotonic())
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    admitted.sort()
+    assert all(b - a >= 0.099 for a, b in pairwise(admitted)), admitted
+
+
 def test_async_limiter_fifo_and_cancellation() -> None:
     order: list[int] = []
 
@@ -149,6 +171,7 @@ def _http_date(dt: datetime) -> str:
         ("tomorrow", None),
         ("1, 2", None),
         ("9" * 30, None),
+        ("9" * 5000, None),  # beyond Python's int string-conversion digit limit
     ],
 )
 def test_retry_after(value: str, want: timedelta | None) -> None:

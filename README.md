@@ -84,7 +84,7 @@ Client(
 
 ### Rate limiting
 
-Each client sends at most **200 requests per minute** by default, evenly spaced (one every 300 ms) without bursts. The first request goes out immediately. Authentication, uploads and downloads count towards the same limit. Waiting requests are admitted in order; with `AsyncClient`, a cancelled request leaves the queue without using up a slot. Separate client instances have separate limits.
+Each client sends at most **200 requests per minute** by default, evenly spaced (one every 300 ms) without bursts. The first request goes out immediately. Authentication, uploads and downloads count towards the same limit. Waiting requests are admitted one at a time; with `AsyncClient` they are admitted in arrival order, and a cancelled request leaves the queue without using up a slot. Separate client instances have separate limits.
 
 ```python
 Client(base_url, rate_limit=100)  # override

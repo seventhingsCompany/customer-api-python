@@ -24,8 +24,9 @@ def interval(requests_per_minute: int | None) -> float | None:
 class RateLimiter:
     """Thread-safe pacing for the sync client.
 
-    Each caller reserves the next free slot under a short lock and then sleeps
-    until it, so callers are admitted in the order they reserved.
+    Callers are admitted one at a time: the lock is held while sleeping and the
+    next slot is set from the clock at admission, so a caller that wakes late
+    can never be admitted right after another one.
     """
 
     def __init__(
@@ -45,11 +46,9 @@ class RateLimiter:
         if self._interval is None:
             return
         with self._lock:
-            now = self._clock()
-            slot = now if self._next is None else max(now, self._next)
-            self._next = slot + self._interval
-        if slot > now:
-            self._sleep(slot - now)
+            while self._next is not None and (delay := self._next - self._clock()) > 0:
+                self._sleep(delay)
+            self._next = self._clock() + self._interval
 
 
 class AsyncRateLimiter:
