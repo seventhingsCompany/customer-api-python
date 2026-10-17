@@ -16,6 +16,7 @@ import httpx
 
 from .. import _operations as ops
 from .._pagination import DEFAULT_PAGE_SIZE, options_for_page
+from .._rate_limit import DEFAULT_REQUESTS_PER_MINUTE, AsyncRateLimiter
 from .._transport import (
     JSON,
     UNSET,
@@ -28,6 +29,7 @@ from .._transport import (
 from .._transport import base_url as api_base_url
 from ..errors import NetworkError
 from ..models.auth import PingResponse, TokenResponse
+from ..models.catalog_items import CatalogItem, CatalogItemListResponse
 from ..models.circularity_hub import AddObjectEntry, CircularityHubOrder, FilterObject
 from ..models.enums import AssetTrackingTemplate, SSOAppTarget, SSOProviderName, TaskStatus
 from ..models.field_definitions import (
@@ -85,6 +87,11 @@ class AsyncClient:
     ``base_url`` is the instance URL, e.g. ``https://example.seventhings.com``.
     Pass ``http_client`` to use your own ``httpx.AsyncClient`` (it is not closed
     by this client); otherwise one is created with the given ``timeout``.
+
+    Every request (including authentication, uploads and downloads) is paced to
+    ``rate_limit`` requests per minute, evenly spaced without bursts; the first
+    request is immediate. Pass ``rate_limit=0`` (or None) to disable throttling.
+    Separate clients do not share a limit, and HTTP 429 answers are not retried.
     """
 
     def __init__(
@@ -95,8 +102,10 @@ class AsyncClient:
         client_id: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = DEFAULT_TIMEOUT,
+        rate_limit: int | None = DEFAULT_REQUESTS_PER_MINUTE,
     ) -> None:
         self._base_url = api_base_url(base_url)
+        self._rate_limiter = AsyncRateLimiter(rate_limit)
         self.token = token
         self.client_id = client_id
         self._owns_http = http_client is None
@@ -114,6 +123,7 @@ class AsyncClient:
         self.field_definitions = AsyncFieldDefinitionsService(self)
         self.circularity_hub = AsyncCircularityHubService(self)
         self.reports = AsyncReportsService(self)
+        self.catalog_items = AsyncCatalogItemsService(self)
 
     @classmethod
     async def with_credentials(
@@ -125,9 +135,10 @@ class AsyncClient:
         *,
         http_client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = DEFAULT_TIMEOUT,
+        rate_limit: int | None = DEFAULT_REQUESTS_PER_MINUTE,
     ) -> AsyncClient:
         """Create a client and log in with username/password."""
-        client = cls(base_url, http_client=http_client, timeout=timeout)
+        client = cls(base_url, http_client=http_client, timeout=timeout, rate_limit=rate_limit)
         try:
             await client.auth.login(username, password, client_id)
         except BaseException:
@@ -157,6 +168,7 @@ class AsyncClient:
 
     async def _send(self, op: Operation[T]) -> T:
         request = build_request(self._http, self._base_url, self.token, op)
+        await self._rate_limiter.wait()
         try:
             resp = await self._http.send(request)
         except httpx.TransportError as exc:
@@ -231,7 +243,7 @@ class AsyncObjectsService(_AsyncService):
     """Objects (assets). Records are schema-free field maps."""
 
     async def list(self, opts: ListOptions | None = None) -> builtins.list[dict[str, Any]]:
-        return await self._send(ops.resource_list("objects", opts, unwrap=False))
+        return await self._send(ops.resource_list("objects", opts))
 
     async def all(self, opts: ListOptions | None = None) -> AsyncIterator[Fields]:
         """Iterate every object across all pages (``opts.page`` is ignored)."""
@@ -250,7 +262,7 @@ class AsyncObjectsService(_AsyncService):
         return await self._send(ops.resource_create("object", fields))
 
     async def get(self, uuid: str) -> dict[str, Any]:
-        return await self._send(ops.resource_get("object", uuid, unwrap=False))
+        return await self._send(ops.resource_get("object", uuid))
 
     async def get_by_barcode(self, barcode: str) -> dict[str, Any]:
         """Look up an object by barcode (archived objects included)."""
@@ -282,13 +294,13 @@ class AsyncObjectsService(_AsyncService):
 
 
 class _AsyncSpaceService(_AsyncService):
-    """Rooms and locations share one shape; ``{uuid, fields}`` envelopes are flattened."""
+    """Rooms and locations share one shape: flat field maps."""
 
     _plural: str
     _singular: str
 
     async def list(self, opts: ListOptions | None = None) -> builtins.list[dict[str, Any]]:
-        return await self._send(ops.resource_list(self._plural, opts, unwrap=True))
+        return await self._send(ops.resource_list(self._plural, opts))
 
     async def all(self, opts: ListOptions | None = None) -> AsyncIterator[Fields]:
         """Iterate every record across all pages (``opts.page`` is ignored)."""
@@ -307,11 +319,11 @@ class _AsyncSpaceService(_AsyncService):
         return await self._send(ops.resource_create(self._singular, fields))
 
     async def get(self, uuid: str) -> dict[str, Any]:
-        return await self._send(ops.resource_get(self._singular, uuid, unwrap=True))
+        return await self._send(ops.resource_get(self._singular, uuid))
 
     async def patch(self, uuid: str, fields: Mapping[str, Any]) -> dict[str, Any] | None:
         """Update fields; returns the updated record, or None if the API sent no body."""
-        return await self._send(ops.resource_patch_unwrapped(self._singular, uuid, fields))
+        return await self._send(ops.resource_patch_returning(self._singular, uuid, fields))
 
     async def delete(self, uuid: str) -> None:
         await self._send(ops.resource_delete(self._singular, uuid))
@@ -412,10 +424,17 @@ class AsyncFilesService(_AsyncService):
         return await self._send(ops.file_upload(filename, data))
 
     async def get_data(self, uuid: str) -> bytes:
-        return await self._send(ops.file_data(uuid, thumbnail=False))
+        return await self._send(ops.file_data(uuid))
 
-    async def get_thumbnail(self, uuid: str) -> bytes:
-        return await self._send(ops.file_data(uuid, thumbnail=True))
+    async def get_thumbnail(
+        self, uuid: str, *, width: int | None = None, height: int | None = None
+    ) -> bytes:
+        """Download a thumbnail: 150 x 100 by default, or fitted within width x height.
+
+        Custom sizes need both dimensions (1-2000 pixels) and keep the aspect ratio.
+        The API creates and caches each new size and may reject excess sizes with 422.
+        """
+        return await self._send(ops.file_thumbnail(uuid, width, height))
 
 
 class AsyncTasksService(_AsyncService):
@@ -430,7 +449,7 @@ class AsyncTasksService(_AsyncService):
         return await self._send(ops.task_create(task))
 
     async def update(self, uuid: str, task: UpdateTask) -> None:
-        """Replace a task (PUT)."""
+        """Replace a task (PUT). ``task.reminders=None`` leaves them out of the request."""
         await self._send(ops.task_update(uuid, task))
 
     async def delete(self, uuid: str) -> None:
@@ -462,11 +481,19 @@ class AsyncRentalsService(_AsyncService):
         return await self._send(ops.rental_get(uuid))
 
     async def create(self, rental: CreateRentalCase) -> str:
-        """Create a rental case and return its UUID."""
+        """Create a rental case and return its UUID.
+
+        Raises RentalCaseRenterRequiredError, without sending a request, if
+        ``rental.renter`` is None.
+        """
         return await self._send(ops.rental_create(rental))
 
     async def update(self, uuid: str, rental: UpdateRentalCase) -> None:
-        """Replace a rental case (PUT)."""
+        """Replace a rental case (PUT) with the complete state, not a partial patch.
+
+        Raises RentalCaseRenterRequiredError, without sending a request, if
+        ``rental.renter`` is None.
+        """
         await self._send(ops.rental_update(uuid, rental))
 
     async def delete(self, uuid: str) -> None:
@@ -577,6 +604,41 @@ class AsyncReportsService(_AsyncService):
     async def create(self, report: CreateReport) -> bytes:
         """Render a report and return the PDF bytes."""
         return await self._send(ops.report_create(report))
+
+
+class AsyncCatalogItemsService(_AsyncService):
+    """Product catalog. Requires the catalog feature and matching rights on the instance."""
+
+    async def list(self, opts: ListOptions | None = None) -> CatalogItemListResponse:
+        return await self._send(ops.catalog_items_list(opts))
+
+    async def all(self, opts: ListOptions | None = None) -> AsyncIterator[CatalogItem]:
+        """Iterate every catalog item across all pages (``opts.page`` is ignored)."""
+
+        async def fetch(page: int) -> builtins.list[CatalogItem]:
+            return (await self.list(options_for_page(opts, ListOptions, page))).items
+
+        async for item in _walk(fetch, _per_page(opts)):
+            yield item
+
+    async def get(self, uuid: str) -> CatalogItem:
+        return await self._send(ops.catalog_item_get(uuid))
+
+    async def create(self, fields: Mapping[str, Any]) -> str:
+        """Create a catalog item and return its UUID."""
+        return await self._send(ops.catalog_item_create(fields))
+
+    async def update(self, uuid: str, fields: Mapping[str, Any]) -> None:
+        """Replace all fields (PUT): missing fields are emptied.
+
+        Server-maintained fields are ignored, so ``get(...).fields`` can be sent
+        back. Objects created from the item are not changed.
+        """
+        await self._send(ops.catalog_item_update(uuid, fields))
+
+    async def delete(self, uuid: str) -> None:
+        """Delete a catalog item; objects created from it stay intact."""
+        await self._send(ops.catalog_item_delete(uuid))
 
 
 def _per_page(opts: ListOptions | UserListOptions | PersonListOptions | None) -> int:

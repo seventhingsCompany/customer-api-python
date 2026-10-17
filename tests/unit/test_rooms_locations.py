@@ -9,31 +9,37 @@ from .conftest import Harness
 SERVICES = [("rooms", "room"), ("locations", "location")]
 
 FLAT = {"uuid": "r-1", "name": "Office", "building_id": 3}
-WRAPPED = {"uuid": "r-1", "fields": {"name": "Office", "building_id": 3}}
-EXPECTED = {"uuid": "r-1", "name": "Office", "building_id": 3}
+# Flat maps are returned untouched; a {uuid, fields} shape is no longer unwrapped.
+NESTED = {"uuid": "r-1", "fields": {"name": "Office", "building_id": 3}}
 
 
 @pytest.mark.parametrize(("plural", "singular"), SERVICES)
-@pytest.mark.parametrize("payload", [FLAT, WRAPPED], ids=["flat", "wrapped"])
-def test_list_unwraps(h: Harness, plural: str, singular: str, payload: dict[str, Any]) -> None:
+@pytest.mark.parametrize("payload", [FLAT, NESTED], ids=["flat", "nested"])
+def test_list_returns_map_as_is(
+    h: Harness, plural: str, singular: str, payload: dict[str, Any]
+) -> None:
     h.respond(json_body={"items": [payload]})
-    assert h.call(lambda c: getattr(c, plural).list()) == [EXPECTED]
+    assert h.call(lambda c: getattr(c, plural).list()) == [payload]
     assert h.path() == f"/{plural}"
 
 
 @pytest.mark.parametrize(("plural", "singular"), SERVICES)
-@pytest.mark.parametrize("payload", [FLAT, WRAPPED], ids=["flat", "wrapped"])
-def test_get_unwraps(h: Harness, plural: str, singular: str, payload: dict[str, Any]) -> None:
+@pytest.mark.parametrize("payload", [FLAT, NESTED], ids=["flat", "nested"])
+def test_get_returns_map_as_is(
+    h: Harness, plural: str, singular: str, payload: dict[str, Any]
+) -> None:
     h.respond(json_body=payload)
-    assert h.call(lambda c: getattr(c, plural).get("r-1")) == EXPECTED
+    assert h.call(lambda c: getattr(c, plural).get("r-1")) == payload
     assert h.path() == f"/{singular}/r-1"
 
 
 @pytest.mark.parametrize(("plural", "singular"), SERVICES)
-@pytest.mark.parametrize("payload", [FLAT, WRAPPED], ids=["flat", "wrapped"])
-def test_patch_unwraps(h: Harness, plural: str, singular: str, payload: dict[str, Any]) -> None:
+@pytest.mark.parametrize("payload", [FLAT, NESTED], ids=["flat", "nested"])
+def test_patch_returns_map_as_is(
+    h: Harness, plural: str, singular: str, payload: dict[str, Any]
+) -> None:
     h.respond(json_body=payload)
-    assert h.call(lambda c: getattr(c, plural).patch("r-1", {"name": "Office"})) == EXPECTED
+    assert h.call(lambda c: getattr(c, plural).patch("r-1", {"name": "Office"})) == payload
     assert (h.last.method, h.path()) == ("PATCH", f"/{singular}/r-1")
     assert h.body() == {"name": "Office"}
 

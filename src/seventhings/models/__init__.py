@@ -1,6 +1,7 @@
 """Request/response models, enums and list options."""
 
 from .auth import PingResponse, TokenResponse
+from .catalog_items import CatalogItem, CatalogItemListResponse
 from .circularity_hub import (
     AddObjectEntry,
     CircularityHubBillingData,
@@ -97,6 +98,8 @@ __all__ = [
     "AddObjectEntry",
     "AssetTrackingTemplate",
     "AttachmentFile",
+    "CatalogItem",
+    "CatalogItemListResponse",
     "CircularityHubBillingData",
     "CircularityHubOrder",
     "CreateFieldDefinition",

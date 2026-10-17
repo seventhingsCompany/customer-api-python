@@ -59,6 +59,9 @@ class RentalCase:
     title: str
     renter: RentalCaseRenter | None
     references: list[RentalCaseReference]
+    is_full_day: bool
+    issue_at: str | None
+    due_at: str | None
     issue_date: str | None
     issue_date_reminder: TimeInterval | None
     due_date: str | None
@@ -82,6 +85,9 @@ class RentalCase:
             references=[
                 RentalCaseReference.from_dict(r) for r in d.arr(m.get("references"), "refs")
             ],
+            is_full_day=d.boolean(m.get("is_full_day")),
+            issue_at=d.opt_string(m.get("issue_at")),
+            due_at=d.opt_string(m.get("due_at")),
             issue_date=d.opt_string(m.get("issue_date")),
             issue_date_reminder=TimeInterval.from_optional(m.get("issue_date_reminder")),
             due_date=d.opt_string(m.get("due_date")),
@@ -99,7 +105,17 @@ class RentalCase:
 
 @dataclass(frozen=True, slots=True)
 class CreateRentalCase:
-    """Request body for creating a rental case. Reminders are sent only when set."""
+    """Request body for creating a rental case.
+
+    ``renter`` is required by the SDK: create and update raise
+    ``RentalCaseRenterRequiredError`` without sending a request when it is None,
+    because the server fails when it is omitted.
+
+    ``is_full_day`` (explicit ``False`` selects a timed rental), ``issue_at`` and
+    ``due_at`` (RFC 3339 timestamps; the return time is exclusive) and the
+    reminders are sent only when set. Leave them None to let the API infer the
+    kind on create, or keep the stored kind on update.
+    """
 
     title: str
     renter: RentalCaseRenter | None
@@ -111,11 +127,15 @@ class CreateRentalCase:
     attachments: list[str] = field(default_factory=list)
     issue_date_reminder: TimeInterval | None = None
     due_date_reminder: TimeInterval | None = None
+    is_full_day: bool | None = None
+    issue_at: str | None = None
+    due_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "title": self.title,
-            "renter": self.renter.to_dict() if self.renter else None,
+        body: dict[str, Any] = {"title": self.title}
+        if self.renter is not None:
+            body["renter"] = self.renter.to_dict()
+        body |= {
             "references": [r.to_dict() for r in self.references],
             "issue_date": self.issue_date,
             "due_date": self.due_date,
@@ -123,6 +143,12 @@ class CreateRentalCase:
             "responsible_user_uuid": self.responsible_user_uuid,
             "attachments": list(self.attachments),
         }
+        if self.is_full_day is not None:
+            body["is_full_day"] = self.is_full_day
+        if self.issue_at is not None:
+            body["issue_at"] = self.issue_at
+        if self.due_at is not None:
+            body["due_at"] = self.due_at
         if self.issue_date_reminder is not None:
             body["issue_date_reminder"] = self.issue_date_reminder.to_dict()
         if self.due_date_reminder is not None:
@@ -132,4 +158,8 @@ class CreateRentalCase:
 
 @dataclass(frozen=True, slots=True)
 class UpdateRentalCase(CreateRentalCase):
-    """Request body for replacing a rental case (same shape as CreateRentalCase)."""
+    """Complete replacement body for a rental case (same shape as CreateRentalCase).
+
+    Updates are PUT, not partial patches: send the complete desired state, as
+    omitted values may be cleared. Omit the kind and times to keep the stored kind.
+    """

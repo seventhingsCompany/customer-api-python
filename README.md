@@ -2,7 +2,9 @@
 
 [![PyPI](https://img.shields.io/pypi/v/seventhings-customer-api)](https://pypi.org/project/seventhings-customer-api/) [![CI](https://github.com/seventhingsCompany/customer-api-python/actions/workflows/ci.yml/badge.svg)](https://github.com/seventhingsCompany/customer-api-python/actions/workflows/ci.yml)
 
-Python client for the seventhings Customer API (`/customer-api/v1`). It offers the same features as the [Go](https://github.com/seventhingsCompany/customer-api-go) and [PHP](https://github.com/seventhingsCompany/customer-api-php) SDKs (v1.4.0) and comes with both a synchronous and an asynchronous client.
+Python client for the seventhings Customer API (`/customer-api/v1`). It offers the same features as the [Go](https://github.com/seventhingsCompany/customer-api-go) and [PHP](https://github.com/seventhingsCompany/customer-api-php) SDKs (v1.5.0) and comes with both a synchronous and an asynchronous client.
+
+Targets API description `v0.20143_c5f8b54b3_20261005`.
 
 - Python 3.10+
 - The only runtime dependency is [`httpx`](https://www.python-httpx.org/)
@@ -76,8 +78,20 @@ Client(
     client_id=None,  # OAuth client ID used by auth.refresh()
     http_client=None,  # your own httpx.Client / httpx.AsyncClient (not closed by the SDK)
     timeout=30.0,  # seconds; None disables the timeout
+    rate_limit=200,  # requests per minute; 0 or None disables throttling
 )
 ```
+
+### Rate limiting
+
+Each client sends at most **200 requests per minute** by default, evenly spaced (one every 300 ms) without bursts. The first request goes out immediately. Authentication, uploads and downloads count towards the same limit. Waiting requests are admitted one at a time; with `AsyncClient` they are admitted in arrival order, and a cancelled request leaves the queue without using up a slot. Separate client instances have separate limits.
+
+```python
+Client(base_url, rate_limit=100)  # override
+Client(base_url, rate_limit=0)  # disable
+```
+
+`with_credentials()` accepts `rate_limit` too. The SDK does not retry HTTP 429 answers itself (see [Retry-After](#retry-after)).
 
 ## Usage
 
@@ -151,9 +165,12 @@ with open("photo.jpg", "rb") as fh:
     file_uuid = client.files.upload("photo.jpg", fh)  # or pass bytes
 meta = client.files.get(file_uuid)
 data = client.files.get_data(file_uuid)
-thumb = client.files.get_thumbnail(file_uuid)
+thumb = client.files.get_thumbnail(file_uuid)  # 150 x 100
+thumb = client.files.get_thumbnail(file_uuid, width=320, height=240)  # 1-2000 px each
 recent = client.files.list()  # the most recent files (max 20)
 ```
+
+A custom thumbnail size keeps the aspect ratio. The API creates and caches each new size, and once a file has a certain number of sizes it answers further new sizes with 422.
 
 ### Tasks
 
@@ -183,6 +200,8 @@ client.tasks.update(task_uuid, UpdateTask(title="Inspect again", assignees=[user
 client.tasks.delete(task_uuid)
 ```
 
+`reminders=None` (the default) leaves reminders out of the request, `reminders=[]` disables them, and a zero interval (`TimeInterval(TimeIntervalUnit.DAYS, 0)`) reminds on the deadline.
+
 ### Rental cases
 
 ```python
@@ -191,6 +210,7 @@ from seventhings.models import (
     RentalCaseReferenceInput,
     RentalCaseRenter,
     RenterType,
+    UpdateRentalCase,
 )
 
 rental_uuid = client.rentals.create(
@@ -206,11 +226,29 @@ rental_uuid = client.rentals.create(
 rental = client.rentals.get(rental_uuid)
 for rc in client.rentals.all():
     print(rc.title, rc.status)
+
+# Updates are full replacements (PUT): send the complete desired state.
+client.rentals.update(
+    rental_uuid,
+    UpdateRentalCase(
+        title="Laptop loan",
+        renter=RentalCaseRenter(RenterType.USER, user_uuid),
+        references=[RentalCaseReferenceInput(obj_uuid)],
+        issue_date="2026-01-01 09:00:00",
+        due_date="2026-01-08 09:00:00",
+        responsible_user_uuid=user_uuid,
+        comment="Updated pickup instructions",
+    ),
+)
 ```
+
+Timed rentals: set `is_full_day=False` with `issue_at` and `due_at` (RFC 3339 timestamps; the return time is exclusive). Leave all three as None to let the API infer the kind on create, or to keep the stored kind on update. Responses always include `is_full_day`, `issue_at` and `due_at`.
+
+`create` and `update` need a `renter`. The API description marks it optional, but the server currently fails with HTTP 500 when it is missing, so the SDK raises `RentalCaseRenterRequiredError` before sending the request.
 
 ### Rooms and locations
 
-These work like objects. The difference is that `patch` returns the updated record, and responses that come back as a `{uuid, fields}` envelope are flattened into a single dict for you.
+These work like objects. The difference is that `patch` returns the updated record (or None if the API sends no body). Records are the flat field maps the API returns; no `{uuid, fields}` envelope is unwrapped.
 
 ```python
 loc_uuid = client.locations.create({"name": "HQ"})
@@ -233,6 +271,27 @@ client.persons.patch(person_uuid, {"department": "IT"})
 for p in client.persons.all(PersonListOptions(sort_by="last_name")):
     ...
 ```
+
+Person records are flat field maps. `person.uuid` comes from `person_uuid` only, and `person.fields` holds the whole map, including custom fields and attachments.
+
+### Product catalog
+
+Needs the product catalog feature and the matching rights on the instance.
+
+```python
+from seventhings.models import ListOptions
+
+page = client.catalog_items.list(ListOptions(page=1, per_page=25))
+# page.items, page.page, page.per_page, page.total, page.sort
+item = client.catalog_items.get(item_uuid)
+item_uuid = client.catalog_items.create({"catalog_object_inventory_name": "Laptop"})
+client.catalog_items.update(item_uuid, item.fields)
+client.catalog_items.delete(item_uuid)
+for item in client.catalog_items.all():
+    ...
+```
+
+`update` is a PUT that replaces every field: fields you leave out are emptied. Server-maintained fields are ignored, so a field map you read can be sent back unchanged. Object field keys start with `catalog_object_`; catalog metadata keys have no prefix. Updating or deleting a catalog item leaves the objects created from it untouched.
 
 ### Field definitions
 
@@ -312,6 +371,7 @@ Every exception derives from `seventhings.SeventhingsError`:
 | `APIError` | The API returned a status of 400 or higher |
 | `NetworkError` | Connection failure, timeout or another transport error (wraps the `httpx` exception) |
 | `DecodeError` | The response could not be decoded, e.g. invalid JSON or a missing `Location` header |
+| `RentalCaseRenterRequiredError` | A rental case create/update has no renter (raised before any request) |
 
 ```python
 from seventhings import APIError
@@ -324,11 +384,32 @@ except APIError as err:
         ...  # is_rate_limited, is_server_error, is_feature_inactive
 ```
 
-`is_feature_inactive` is true when the endpoint's module (for example rentals) is not active on the instance.
+`is_feature_inactive` is true when the endpoint's module (for example rentals) is not active on the instance. `err.headers` holds a copy of the response headers; they are not part of the exception message.
+
+### Retry-After
+
+`APIError.retry_after(now=None)` parses the standard `Retry-After` header, given either as seconds or as an HTTP date, and returns a `timedelta`:
+
+```python
+from datetime import datetime, timezone
+
+try:
+    client.objects.list()
+except APIError as err:
+    if err.is_rate_limited:
+        now = datetime.now(timezone.utc)
+        delay = err.retry_after(now)
+        if delay is not None:
+            retry_at = now + delay  # requeue the operation no earlier than this
+        else:
+            ...  # header missing or invalid: use your own bounded backoff
+```
+
+A date in the past gives a zero delay. A missing, repeated or invalid header gives None. The helper also works for other statuses that send the header (for example 503). It does not sleep or retry: the SDK sends each request once, and your application decides whether a retry is safe.
 
 ## Pagination
 
-`list()` methods fetch a single page. The `all()` iterators on objects, rooms, locations, rentals, users, persons and Circularity Hub items (`all_items()`) walk through every page:
+`list()` methods fetch a single page. The `all()` iterators on objects, rooms, locations, rentals, users, persons, catalog items and Circularity Hub items (`all_items()`) walk through every page:
 - they ignore `opts.page`;
 - they use `opts.per_page` as the page size, defaulting to 100;
 - they stop at the first page that is shorter than the page size.
@@ -338,7 +419,7 @@ Tasks and files have no paging. History is paged manually.
 ## Scope and limitations
 
 - **No automatic token refresh.** Call `client.auth.refresh(refresh_token)` yourself when the access token expires.
-- **No automatic retry and no rate limiting.** Wrap calls yourself if you need either, or pass an `httpx` client that uses a retrying transport.
+- **No automatic retry.** Use `APIError.retry_after()` and your own retry policy, or pass an `httpx` client that uses a retrying transport. Requests are throttled to 200 per minute per client by default (see [Rate limiting](#rate-limiting)).
 - **Dates are strings**, as the API sends them (`Y-m-d H:i:s`, UTC). `Fields.get_time()` parses them.
 - **Unknown enum values** from newer API versions are kept as plain strings rather than raising an error.
 
@@ -356,7 +437,7 @@ The synchronous client (`src/seventhings/_sync/client.py`) is **generated** from
 
 ### Integration tests
 
-The integration tests run against a live instance and create, then delete, their own test data:
+The integration tests run against a live instance and create, then delete, their own test data. Use a test instance: some tests create users or field definitions that cannot be deleted, the Circularity Hub order tests check out existing items, and uploaded files stay because the API has no file-delete endpoint.
 
 ```sh
 cp .env.example .env   # fill in SEVENTHINGS_BASE_URL/USERNAME/PASSWORD/CLIENT_ID

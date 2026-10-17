@@ -117,7 +117,7 @@ def to_response(resp: httpx.Response) -> Response:
     """Convert an httpx response, raising APIError for status >= 400."""
     if resp.status_code >= 400:
         status = f"{resp.status_code} {resp.reason_phrase}".strip()
-        raise APIError(resp.status_code, status, resp.text)
+        raise APIError(resp.status_code, status, resp.text, httpx.Headers(resp.headers))
     return Response(resp.status_code, resp.headers, resp.content)
 
 

@@ -98,14 +98,16 @@ class CreateTask:
     """Request body for creating a task.
 
     ``deadline`` and ``recurring_schedule`` are always sent (as null when unset);
-    ``comment``, ``attachments`` (file UUIDs) and ``notify`` only when set.
+    ``reminders``, ``comment``, ``attachments`` (file UUIDs) and ``notify`` only
+    when set. ``reminders=[]`` explicitly disables reminders; a zero interval
+    reminds on the deadline.
     """
 
     title: str
     deadline: str | None = None
     assignees: list[str] = field(default_factory=list)
     references: list[TaskReferenceInput] = field(default_factory=list)
-    reminders: list[TimeInterval] = field(default_factory=list)
+    reminders: list[TimeInterval] | None = None
     recurring_schedule: TimeInterval | None = None
     comment: str | None = None
     attachments: list[str] | None = None
@@ -117,11 +119,12 @@ class CreateTask:
             "deadline": self.deadline,
             "assignees": list(self.assignees),
             "references": [r.to_dict() for r in self.references],
-            "reminders": [r.to_dict() for r in self.reminders],
             "recurring_schedule": (
                 self.recurring_schedule.to_dict() if self.recurring_schedule else None
             ),
         }
+        if self.reminders is not None:
+            body["reminders"] = [r.to_dict() for r in self.reminders]
         if self.comment is not None:
             body["comment"] = self.comment
         if self.attachments:

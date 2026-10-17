@@ -18,6 +18,7 @@ export SEVENTHINGS_PASSWORD=secret
 export SEVENTHINGS_CLIENT_ID=your-client-id
 
 uv run python examples/demo/demo.py
+uv run python examples/demo/demo.py --rate-limit 400   # override the 200 requests/minute default (0 disables)
 ```
 
 If you have already set up `.env` for the integration tests, you can load it instead:
@@ -30,11 +31,11 @@ The demo uses the synchronous `Client`. The same calls work on `AsyncClient` wit
 
 ## What it does
 
-The demo runs the steps below in order. Every object, task and person it creates is deleted again before it exits. The uploaded demo file stays on the instance, because the API has no endpoint for deleting files.
+The demo runs the steps below in order. Every object, task, person, catalog item and rental it creates is deleted again, also when a later step fails. The uploaded demo files stay on the instance, because the API has no endpoint for deleting files. If the API answers HTTP 429, the demo prints the `Retry-After` delay and stops; it never retries on its own.
 
 ### 1. Auth
 
-Logs in with the provided credentials and prints the user ID and a truncated access token.
+Logs in with the provided credentials, prints the user ID and the active rate limit.
 
 ### 2. Objects: CRUD, barcode lookup and history
 
@@ -70,7 +71,8 @@ These calls show how to use `ListOptions` with `sort_by`, `where` and the pagina
 
 - Looks up the current user's UUID
 - Creates a temporary object to use as a task reference
-- Creates a task with a deadline, assignee, reference and reminder
+- Creates a task with a deadline, assignee and reference, without reminders and with `notify=False`
+- Updates it with a zero-interval reminder (on the deadline), then with `reminders=[]` (disabled), checking each
 - Closes the task, reads its history, deletes it and confirms the 404
 - Deletes the reference object
 
@@ -82,11 +84,23 @@ These calls show how to use `ListOptions` with `sort_by`, `where` and the pagina
 - Creates a person, patches its department and reads its history
 - Deletes the person and confirms the 404
 
-### 8. History of existing resources
+### 8. Product catalog
+
+Creates a temporary catalog item, reads it, replaces its fields with a PUT, finds it with a filtered list, deletes it and confirms the 404. Skipped when the catalog feature or the create right is missing.
+
+### 9. Timed rental
+
+Creates a temporary object and a timed rental (`is_full_day=False`, `issue_at`/`due_at` with a +02:00 offset), checks the stored times, extends the return time, converts the rental to a full-day rental and then deletes both.
+
+### 10. Custom thumbnail
+
+Uploads a 640x480 PNG, downloads a 320x240 thumbnail, checks its dimensions and that a second request returns the cached image.
+
+### 11. History of existing resources
 
 Reads the history of the first room, the first location and the first rental case, if the instance has any. When the rentals module is not active on the instance, the rentals step is skipped.
 
-### 9. Auth cleanup
+### 12. Auth cleanup
 
 Revokes all tokens for the session.
 
@@ -95,7 +109,8 @@ Revokes all tokens for the session.
 ```
 ── Auth ──────────────────────────────────────────
 [Auth   ] Logging in…
-[Auth   ] Logged in — user_id=3, token=eyJ0eXAiOiJKV1QiLCJh…
+[Auth   ] Logged in — user_id=3
+[Rate   ] Limit: 200 requests/minute, evenly spaced; shared by all calls
 
 ── Objects ──────────────────────────────────────────
 [Objects] Listing objects…
@@ -142,6 +157,8 @@ Revokes all tokens for the session.
 ── Tasks ──────────────────────────────────────────
 [Tasks  ] Creating task…
 ...
+[Tasks  ] Verified reminders: [TimeInterval(unit=<TimeIntervalUnit.DAYS: 'days'>, value=0)] (empty disables reminders)
+[Tasks  ] Verified reminders: [] (empty disables reminders)
 [History] Tasks — 2 entries, page=1 per_page=5 total=2
 [Tasks  ] Deleted task <uuid>
 [Tasks  ] Confirmed deletion (404)
@@ -159,6 +176,22 @@ Revokes all tokens for the session.
 ...
 [Persons] Deleted person <uuid>
 [Persons] Confirmed deletion (404)
+
+── Catalog ──────────────────────────────────────────
+[Catalog] Creating a temporary catalog item…
+[Catalog] Verified create, get, PUT and filtered list — total=1
+[Catalog] Confirmed deletion (404)
+
+── Rentals ──────────────────────────────────────────
+[Rentals] Creating and updating a timed rental…
+[Rentals] Verified timed rental <issue_at> → <due_at> (exclusive)
+[Rentals] Verified extended return time and conversion to full-day
+[Rentals] Cleaned up rental and object
+
+── Files ──────────────────────────────────────────
+[Files  ] Uploading an image and verifying a custom thumbnail…
+[Files  ] Uploaded image <uuid>; it remains because the API has no delete endpoint
+[Files  ] Verified 320x240 thumbnail and cached response (… bytes)
 
 ── History ──────────────────────────────────────────
 [History] Reading history for existing resources…

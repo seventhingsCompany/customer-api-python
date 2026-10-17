@@ -38,6 +38,7 @@ from seventhings.models import (
     TimeIntervalUnit,
     TokenResponse,
     UpdateFieldDefinition,
+    UpdateRentalCase,
     UpdateTask,
     User,
 )
@@ -66,52 +67,37 @@ def test_person_preserves_custom_fields() -> None:
     ("body", "want"),
     [
         ({"person_uuid": "legacy", "custom": "value"}, "legacy"),
-        ({"uuid": "current", "custom": "value"}, "current"),
+        ({"uuid": "current", "custom": "value"}, ""),
         ({"person_uuid": "legacy", "uuid": "current"}, "legacy"),
-        ({"person_uuid": "", "uuid": "current"}, "current"),
-        ({"person_uuid": None, "uuid": "current"}, "current"),
+        ({"person_uuid": "", "uuid": "current"}, ""),
+        ({"person_uuid": None, "uuid": "current"}, ""),
         ({}, ""),
     ],
 )
-def test_person_uuid_compatibility(body: dict[str, Any], want: str) -> None:
+def test_person_flat_identity(body: dict[str, Any], want: str) -> None:
     p = Person.from_dict(body)
     assert p.uuid == want
     assert p.fields == body
 
 
-@pytest.mark.parametrize(
-    "body", [{"uuid": 42}, {"person_uuid": 42}, {"uuid": "p-1", "fields": "nope"}, []]
-)
+@pytest.mark.parametrize("body", [{"person_uuid": 42}, []])
 def test_person_rejects_invalid_shapes(body: Any) -> None:
     with pytest.raises(DecodeError):
         Person.from_dict(body)
 
 
-@pytest.mark.parametrize("with_inner_uuid", [True, False])
-def test_person_wrapped_response(with_inner_uuid: bool) -> None:
-    inner: dict[str, Any] = {
-        "id": 7,
-        "email": "ada@example.test",
-        "first_name": "Ada",
-        "last_name": "Lovelace",
-        "department": "IT",
-        "cost_center": "CC-1",
-        "documents": [{"uuid": "file-1"}],
-    }
-    if with_inner_uuid:
-        inner["person_uuid"] = "p-1"
-    p = Person.from_dict({"uuid": "p-1", "fields": inner})
-    assert p.uuid == "p-1"
-    assert (p.id, p.firstname, p.lastname, p.department) == (7, "Ada", "Lovelace", "IT")
-    assert p.documents == [{"uuid": "file-1"}]
-    # The raw map is the inner map; the envelope uuid is not injected.
-    assert p.fields == inner
-
-
-def test_person_null_fields_is_not_an_envelope() -> None:
-    p = Person.from_dict({"uuid": "p-1", "fields": None, "email": "x@y"})
-    assert p.uuid == "p-1"
-    assert p.email == "x@y"
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"uuid": "p-1", "fields": {"id": 7, "email": "ada@example.test", "first_name": "Ada"}},
+        {"uuid": "p-1", "fields": "invalid"},
+        {"uuid": "p-1", "fields": {"id": "invalid"}},
+    ],
+)
+def test_person_does_not_unwrap_fields(body: dict[str, Any]) -> None:
+    p = Person.from_dict(body)
+    assert (p.uuid, p.id, p.email, p.firstname) == ("", 0, "", None)
+    assert p.fields == body
 
 
 def test_person_list_response() -> None:
@@ -119,7 +105,7 @@ def test_person_list_response() -> None:
         {
             "items": [
                 {"person_uuid": "p-1", "id": 1, "cost_center": "CC-1"},
-                {"uuid": "p-2", "id": 2},
+                {"person_uuid": "p-2", "id": 2},
             ],
             "page": 1,
             "per_page": 50,
@@ -289,9 +275,24 @@ def test_create_task_to_dict_minimal() -> None:
         "deadline": None,
         "assignees": [],
         "references": [],
-        "reminders": [],
         "recurring_schedule": None,
     }
+
+
+@pytest.mark.parametrize(
+    "reminders",
+    [None, [], [TimeInterval(TimeIntervalUnit.DAYS, 0)]],
+    ids=["unset", "empty", "zero"],
+)
+@pytest.mark.parametrize("cls", [CreateTask, UpdateTask])
+def test_task_optional_reminders(
+    cls: type[CreateTask], reminders: list[TimeInterval] | None
+) -> None:
+    body = cls(title="T", reminders=reminders).to_dict()
+    if reminders is None:
+        assert "reminders" not in body
+    else:
+        assert body["reminders"] == [r.to_dict() for r in reminders]
 
 
 def test_update_task_to_dict_full() -> None:
@@ -339,9 +340,36 @@ def test_create_rental_case_to_dict() -> None:
         responsible_user_uuid="u",
         due_date_reminder=TimeInterval(TimeIntervalUnit.DAYS, 1),
     ).to_dict()
-    assert with_reminder["renter"] is None
+    assert "renter" not in with_reminder
     assert with_reminder["due_date_reminder"] == {"unit": "days", "value": 1}
     assert "issue_date_reminder" not in with_reminder
+
+
+@pytest.mark.parametrize("cls", [CreateRentalCase, UpdateRentalCase])
+def test_timed_rental_case_round_trip(cls: type[CreateRentalCase]) -> None:
+    issue, due = "2026-10-16T08:00:00+00:00", "2026-10-16T10:00:00+00:00"
+    body = cls(
+        title="R",
+        renter=RentalCaseRenter(RenterType.PLAIN, "SDK test"),
+        issue_date="2026-10-16",
+        due_date="2026-10-16",
+        responsible_user_uuid="u",
+        is_full_day=False,
+        issue_at=issue,
+        due_at=due,
+    ).to_dict()
+    assert body["is_full_day"] is False
+    assert body["renter"] == {"type": "plain", "value": "SDK test"}
+    got = RentalCase.from_dict(body)
+    assert (got.is_full_day, got.issue_at, got.due_at) == (False, issue, due)
+    plain = cls(title="R", renter=None, issue_date="i", due_date="d", responsible_user_uuid="u")
+    assert not {"is_full_day", "issue_at", "due_at"} & plain.to_dict().keys()
+
+
+def test_rental_case_full_day_defaults() -> None:
+    rc = RentalCase.from_dict({"is_full_day": True, "issue_at": None})
+    assert (rc.is_full_day, rc.issue_at, rc.due_at) == (True, None, None)
+    assert RentalCase.from_dict({}).is_full_day is False
 
 
 def test_field_definition_request_bodies() -> None:

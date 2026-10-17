@@ -32,23 +32,34 @@ scripts/run-integration.sh [pytest args]   # live tests; needs .env (see .env.ex
 
 **Created IDs**
 - New resources return their UUID in the `Location` header.
-- Files use `Location-UUID`; hub orders return an integer in `Location-Id`.
+- Files and catalog items use `Location-UUID` (falling back to `Location`); hub orders return an integer in `Location-Id`.
 
 **Response shapes**
 - Lists come back as `{items}` for objects, rooms, locations, files, rentals and the hub.
+- Catalog items use a `{items, page, per_page, total, sort}` envelope; `sort` is `[]` (not `{}`) when empty.
 - Tasks, field definitions and report templates come back as bare arrays.
 - Users, persons and history use full page envelopes.
 
 **Rooms and locations**
-- They may answer with a `{uuid, fields}` envelope; `unwrap_resource_fields` flattens it.
+- Records are flat field maps and are returned as-is (no `{uuid, fields}` unwrapping since Go v1.5.0).
 - Their `patch` returns the record, or `None` if the body is empty. Every other `patch` returns `None`.
 
 **Persons**
 - `create` wraps the body in `{"fields": ...}`, but `patch` does not.
-- The UUID comes from `person_uuid` and falls back to `uuid`.
+- Records are flat; the UUID comes from `person_uuid` only (no `uuid` fallback, no envelope unwrapping).
 
 **Circularity Hub**
 - `suggest_*` answers `[]` when there are no suggestions; the SDK returns `None`.
+
+**Rental cases**
+- `create`/`update` raise `RentalCaseRenterRequiredError` before any request when `renter` is None: the spec marks it optional, but the server returns 500 without it.
+- `is_full_day`, `issue_at` and `due_at` are sent only when set.
+
+**Tasks**
+- `reminders=None` is omitted from the body; `[]` is sent and disables reminders.
+
+**Rate limiting**
+- Every request (auth, uploads and downloads included) goes through the client's limiter: 200/min by default, `rate_limit=0` disables it. The unit-test harness disables it.
 
 **Query strings**
 - Brackets are sent literally; only values are escaped (`quote_plus`).

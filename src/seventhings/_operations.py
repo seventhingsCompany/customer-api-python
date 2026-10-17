@@ -11,9 +11,10 @@ from collections.abc import Callable, Mapping
 from typing import IO, Any, TypeVar
 
 from ._transport import UNSET, Operation, Response, segment
-from .errors import DecodeError
+from .errors import DecodeError, RentalCaseRenterRequiredError
 from .models import _decode as d
 from .models.auth import PingResponse, TokenResponse
+from .models.catalog_items import CatalogItem, CatalogItemListResponse
 from .models.circularity_hub import AddObjectEntry, CircularityHubOrder, FilterObject
 from .models.enums import AssetTrackingTemplate, SSOAppTarget, SSOProviderName, TaskStatus
 from .models.field_definitions import (
@@ -48,6 +49,7 @@ T = TypeVar("T")
 
 AUTH_TOKEN_PATH = "auth_token"
 PDF = "application/pdf"
+THUMBNAIL_MAX_SIZE = 2000
 
 
 # --- response helpers -------------------------------------------------------
@@ -64,7 +66,8 @@ def uuid_from_location(resp: Response) -> str:
     return uuid
 
 
-def uuid_from_file_upload(resp: Response) -> str:
+def uuid_from_location_uuid(resp: Response) -> str:
+    """``Location-UUID`` header (files, catalog items), falling back to ``Location``."""
     return resp.header("Location-UUID") or uuid_from_location(resp)
 
 
@@ -76,16 +79,6 @@ def int_from_location_id(resp: Response) -> int:
         return int(raw.strip())
     except ValueError as exc:
         raise DecodeError(f"invalid Location-Id header {raw!r}") from exc
-
-
-def unwrap_resource_fields(resource: dict[str, Any]) -> dict[str, Any]:
-    """Flatten a ``{uuid, fields}`` room/location envelope; flat maps pass through."""
-    fields = resource.get("fields")
-    uuid = resource.get("uuid")
-    if not isinstance(fields, dict) or not isinstance(uuid, str):
-        return resource
-    fields.setdefault("uuid", uuid)
-    return fields
 
 
 def _none(_: Response) -> None:
@@ -116,16 +109,8 @@ def _count(resp: Response) -> int:
     return d.integer(d.obj(resp.json(), "count response").get("count"))
 
 
-def _unwrapped(resp: Response) -> dict[str, Any]:
-    return unwrap_resource_fields(_map(resp))
-
-
-def _unwrapped_or_none(resp: Response) -> dict[str, Any] | None:
-    return _unwrapped(resp) if resp.content.strip() else None
-
-
-def _unwrapped_list(resp: Response) -> list[dict[str, Any]]:
-    return [unwrap_resource_fields(i) for i in _maps(resp)]
+def _map_or_none(resp: Response) -> dict[str, Any] | None:
+    return _map(resp) if resp.content.strip() else None
 
 
 def _list_of(decode: Callable[[Any], T]) -> Callable[[Response], list[T]]:
@@ -205,10 +190,8 @@ def revoke_tokens() -> Operation[None]:
 # --- generic field-map resources (objects, rooms, locations) ---------------
 
 
-def resource_list(
-    plural: str, opts: ListOptions | None, *, unwrap: bool
-) -> Operation[list[dict[str, Any]]]:
-    return Operation("GET", plural, _unwrapped_list if unwrap else _maps, query=_qs(opts))
+def resource_list(plural: str, opts: ListOptions | None) -> Operation[list[dict[str, Any]]]:
+    return Operation("GET", plural, _maps, query=_qs(opts))
 
 
 def resource_count(plural: str, opts: ListOptions | None) -> Operation[int]:
@@ -219,8 +202,8 @@ def resource_create(singular: str, fields: Mapping[str, Any]) -> Operation[str]:
     return Operation("POST", singular, uuid_from_location, json=dict(fields))
 
 
-def resource_get(singular: str, uuid: str, *, unwrap: bool) -> Operation[dict[str, Any]]:
-    return Operation("GET", f"{singular}/{segment(uuid)}", _unwrapped if unwrap else _map)
+def resource_get(singular: str, uuid: str) -> Operation[dict[str, Any]]:
+    return Operation("GET", f"{singular}/{segment(uuid)}", _map)
 
 
 def resource_delete(singular: str, uuid: str) -> Operation[None]:
@@ -231,10 +214,10 @@ def resource_patch(singular: str, uuid: str, fields: Mapping[str, Any]) -> Opera
     return Operation("PATCH", f"{singular}/{segment(uuid)}", _none, json=dict(fields))
 
 
-def resource_patch_unwrapped(
+def resource_patch_returning(
     singular: str, uuid: str, fields: Mapping[str, Any]
 ) -> Operation[dict[str, Any] | None]:
-    return Operation("PATCH", f"{singular}/{segment(uuid)}", _unwrapped_or_none, json=dict(fields))
+    return Operation("PATCH", f"{singular}/{segment(uuid)}", _map_or_none, json=dict(fields))
 
 
 def _history(
@@ -350,13 +333,26 @@ def file_get(uuid: str) -> Operation[File]:
 
 def file_upload(filename: str, data: bytes | IO[bytes]) -> Operation[str]:
     return Operation(
-        "POST", "file", uuid_from_file_upload, files={"data": (filename, data)}, accept=None
+        "POST", "file", uuid_from_location_uuid, files={"data": (filename, data)}, accept=None
     )
 
 
-def file_data(uuid: str, *, thumbnail: bool) -> Operation[bytes]:
-    kind = "thumbnail" if thumbnail else "data"
-    return Operation("GET", f"file/{segment(uuid)}/{kind}", _bytes, accept=None)
+def file_data(uuid: str) -> Operation[bytes]:
+    return Operation("GET", f"file/{segment(uuid)}/data", _bytes, accept=None)
+
+
+def file_thumbnail(uuid: str, width: int | None, height: int | None) -> Operation[bytes]:
+    query = ""
+    if width is not None or height is not None:
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= THUMBNAIL_MAX_SIZE
+            for v in (width, height)
+        ):
+            raise ValueError(
+                f"thumbnail width and height must both be between 1 and {THUMBNAIL_MAX_SIZE}"
+            )
+        query = f"width={width}&height={height}"
+    return Operation("GET", f"file/{segment(uuid)}/thumbnail", _bytes, query=query, accept=None)
 
 
 # --- tasks ------------------------------------------------------------------
@@ -407,7 +403,13 @@ def rentals_list(opts: ListOptions | None) -> Operation[list[RentalCase]]:
     )
 
 
+def _require_renter(rental: CreateRentalCase) -> None:
+    if rental.renter is None:
+        raise RentalCaseRenterRequiredError()
+
+
 def rental_create(rental: CreateRentalCase) -> Operation[str]:
+    _require_renter(rental)
     return Operation("POST", f"{_RENTALS}/rental-case", uuid_from_location, json=rental.to_dict())
 
 
@@ -416,6 +418,7 @@ def rental_get(uuid: str) -> Operation[RentalCase]:
 
 
 def rental_update(uuid: str, rental: UpdateRentalCase) -> Operation[None]:
+    _require_renter(rental)
     return Operation("PUT", f"{_RENTALS}/rental-case/{segment(uuid)}", _none, json=rental.to_dict())
 
 
@@ -429,6 +432,31 @@ def rental_history(
     return _history(
         f"{_RENTALS}/rental-case/{segment(uuid)}/history", opts, RentalCaseHistoryEntry.from_dict
     )
+
+
+# --- catalog items -----------------------------------------------------------
+
+
+def catalog_items_list(opts: ListOptions | None) -> Operation[CatalogItemListResponse]:
+    return Operation(
+        "GET", "catalog-items", _one(CatalogItemListResponse.from_dict), query=_qs(opts)
+    )
+
+
+def catalog_item_get(uuid: str) -> Operation[CatalogItem]:
+    return Operation("GET", f"catalog-item/{segment(uuid)}", _one(CatalogItem.from_dict))
+
+
+def catalog_item_create(fields: Mapping[str, Any]) -> Operation[str]:
+    return Operation("POST", "catalog-item", uuid_from_location_uuid, json={"fields": dict(fields)})
+
+
+def catalog_item_update(uuid: str, fields: Mapping[str, Any]) -> Operation[None]:
+    return Operation("PUT", f"catalog-item/{segment(uuid)}", _none, json={"fields": dict(fields)})
+
+
+def catalog_item_delete(uuid: str) -> Operation[None]:
+    return Operation("DELETE", f"catalog-item/{segment(uuid)}", _none)
 
 
 # --- field definitions ------------------------------------------------------
