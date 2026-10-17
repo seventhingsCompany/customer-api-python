@@ -56,16 +56,6 @@ from seventhings.models import SSOAppTarget, SSOProviderName
 tok = client.auth.login_sso(SSOProviderName.AZURE, auth_code, "client-id", SSOAppTarget.WEB)
 ```
 
-### OAuth authorization code + PKCE
-
-```python
-tok = client.auth.login_authorization_code(
-    "code", "original-code-verifier", "https://app.example/callback", "client-id"
-)
-```
-
-The request is sent form-encoded. The access token and client ID are stored for `refresh()`.
-
 ### Async
 
 `AsyncClient` has the same API as `Client`, except that its methods are coroutines, the `all()` iterators are async iterators, and you close it with `aclose()` or `async with`:

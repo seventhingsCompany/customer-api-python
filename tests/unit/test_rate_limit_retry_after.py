@@ -121,8 +121,7 @@ def test_client_paces_requests_across_kinds(monkeypatch: pytest.MonkeyPatch) -> 
         c.files.get_data("f")
         c.files.upload("a.txt", b"data")
         c.auth.login("user", "pw", "client")
-        c.auth.login_authorization_code("code", "verifier", "uri", "client")
-    assert clock.sleeps == pytest.approx([0.3] * 4)
+    assert clock.sleeps == pytest.approx([0.3] * 3)
 
 
 # -- error headers and Retry-After ------------------------------------------------

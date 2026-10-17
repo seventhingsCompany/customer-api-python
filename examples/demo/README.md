@@ -21,8 +21,6 @@ uv run python examples/demo/demo.py
 uv run python examples/demo/demo.py --rate-limit 400   # override the 200 requests/minute default (0 disables)
 ```
 
-To log in with an OAuth authorization code + PKCE instead of a password, also set `SEVENTHINGS_AUTH_CODE`, `SEVENTHINGS_CODE_VERIFIER` and `SEVENTHINGS_REDIRECT_URI` (the username and password are then not needed). Codes are single-use, so get a fresh one from your authorization flow for each run.
-
 If you have already set up `.env` for the integration tests, you can load it instead:
 
 ```sh
@@ -37,7 +35,7 @@ The demo runs the steps below in order. Every object, task, person, catalog item
 
 ### 1. Auth
 
-Logs in with the provided credentials (or the PKCE code), prints the user ID and the active rate limit.
+Logs in with the provided credentials, prints the user ID and the active rate limit.
 
 ### 2. Objects: CRUD, barcode lookup and history
 

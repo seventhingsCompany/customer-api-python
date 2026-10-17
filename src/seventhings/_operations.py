@@ -183,25 +183,6 @@ def login_sso(
     return _token(body)
 
 
-def login_authorization_code(
-    code: str, code_verifier: str, redirect_uri: str, client_id: str
-) -> Operation[TokenResponse]:
-    # Sent form-encoded, like the OAuth 2.1 token endpoint expects.
-    return Operation(
-        "POST",
-        AUTH_TOKEN_PATH,
-        _one(TokenResponse.from_dict),
-        form={
-            "grant_type": "authorization_code",
-            "code": code,
-            "code_verifier": code_verifier,
-            "redirect_uri": redirect_uri,
-            "client_id": client_id,
-        },
-        authenticated=False,
-    )
-
-
 def revoke_tokens() -> Operation[None]:
     return Operation("DELETE", AUTH_TOKEN_PATH, _none)
 

@@ -69,7 +69,6 @@ scripts/run-integration.sh [pytest args]   # live tests; needs .env (see .env.ex
 - `Content-Type: application/json` is sent only when there is a body (archive and unarchive send none).
 - Raw downloads and multipart uploads send no `Accept: application/json`; report creation sends `Accept: application/pdf`.
 - Ping and `POST auth_token` never send `Authorization`.
-- The PKCE login (`grant_type=authorization_code`) is sent form-encoded; every other token request is JSON.
 
 **SSO login**
 - Uses `grant_type=sso_auth_code` and `provider_name`. The PHP SDK's `sso`/`provider` is wrong.

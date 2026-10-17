@@ -6,9 +6,6 @@ item and a timed rental. Uploaded files stay: the API has no file-delete endpoin
     export SEVENTHINGS_BASE_URL=... SEVENTHINGS_USERNAME=... \\
            SEVENTHINGS_PASSWORD=... SEVENTHINGS_CLIENT_ID=...
     uv run python examples/demo/demo.py [--rate-limit N]
-
-Set SEVENTHINGS_AUTH_CODE, SEVENTHINGS_CODE_VERIFIER and SEVENTHINGS_REDIRECT_URI
-to log in with an OAuth authorization code + PKCE instead of username/password.
 """
 
 from __future__ import annotations
@@ -78,21 +75,9 @@ def run(base_url: str, client_id: str, rate_limit: int) -> None:
     with Client(base_url, rate_limit=rate_limit) as c:
         # -- Auth ---------------------------------------------------------------
         section("Auth", "Logging in…")
-        code = os.environ.get("SEVENTHINGS_AUTH_CODE")
-        if code:
-            tok = c.auth.login_authorization_code(
-                code,
-                require_env("SEVENTHINGS_CODE_VERIFIER"),
-                require_env("SEVENTHINGS_REDIRECT_URI"),
-                client_id,
-            )
-            pf("Auth", "Using OAuth authorization code + PKCE")
-        else:
-            tok = c.auth.login(
-                require_env("SEVENTHINGS_USERNAME"),
-                require_env("SEVENTHINGS_PASSWORD"),
-                client_id,
-            )
+        tok = c.auth.login(
+            require_env("SEVENTHINGS_USERNAME"), require_env("SEVENTHINGS_PASSWORD"), client_id
+        )
         pf("Auth", f"Logged in — user_id={tok.user_id}")
         if rate_limit > 0:
             pf("Rate", f"Limit: {rate_limit} requests/minute, evenly spaced; shared by all calls")

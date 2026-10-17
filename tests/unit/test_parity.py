@@ -10,11 +10,11 @@ import pytest
 from seventhings import AsyncClient, Client
 
 # Every exported method of the Go client (customer-api-go/client) -> Python path.
+# Intentionally not ported: LoginAuthorizationCode (OAuth authorization code + PKCE).
 GO_PARITY = {
     "Ping": "ping",
     "Login": "auth.login",
     "LoginSSO": "auth.login_sso",
-    "LoginAuthorizationCode": "auth.login_authorization_code",
     "Refresh": "auth.refresh",
     "RevokeTokens": "auth.revoke_tokens",
     "Token": "token",

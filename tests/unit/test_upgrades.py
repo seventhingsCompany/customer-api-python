@@ -1,9 +1,8 @@
-"""API upgrade (Go v1.5.0): catalog, PKCE, thumbnail sizes, timed rentals, renter guard."""
+"""API upgrade (Go v1.5.0): catalog, thumbnail sizes, timed rentals, renter guard."""
 
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import parse_qsl
 
 import pytest
 
@@ -81,36 +80,6 @@ def test_catalog_invalid_sorting(sort: Any) -> None:
         CatalogItemListResponse.from_dict({"sort": sort})
 
 
-def test_login_authorization_code(h: Harness) -> None:
-    h.token = None
-    h.respond(json_body={"access_token": "access", "refresh_token": "refresh"})
-    tok, client = h.with_client(
-        lambda c: c.auth.login_authorization_code(
-            "code", "verifier", "https://example.test/callback", "client"
-        )
-    )
-    assert tok.access_token == "access"
-    assert (client.token, client.client_id) == ("access", "client")
-    req = h.last
-    assert (req.method, h.path()) == ("POST", "/auth_token")
-    assert req.headers["Content-Type"] == "application/x-www-form-urlencoded"
-    assert req.headers["Accept"] == "application/json"
-    assert "Authorization" not in req.headers
-    assert dict(parse_qsl(req.content.decode())) == {
-        "grant_type": "authorization_code",
-        "code": "code",
-        "code_verifier": "verifier",
-        "redirect_uri": "https://example.test/callback",
-        "client_id": "client",
-    }
-
-
-def test_login_authorization_code_never_sends_token(h: Harness) -> None:
-    h.respond(json_body={"access_token": "new"})
-    h.call(lambda c: c.auth.login_authorization_code("c", "v", "u", "id"))
-    assert "Authorization" not in h.last.headers
-
-
 def test_thumbnail_with_size(h: Harness) -> None:
     h.respond(content=b"image")
     assert h.call(lambda c: c.files.get_thumbnail("f-1", width=320, height=240)) == b"image"
@@ -172,7 +141,6 @@ def test_timed_rental_request_body(h: Harness) -> None:
         lambda c: c.catalog_items.create({}),
         lambda c: c.catalog_items.update("c-1", {}),
         lambda c: c.catalog_items.delete("c-1"),
-        lambda c: c.auth.login_authorization_code("code", "verifier", "uri", "client"),
         lambda c: c.files.get_thumbnail("f-1", width=100, height=100),
     ],
 )

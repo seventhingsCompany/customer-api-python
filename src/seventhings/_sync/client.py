@@ -224,19 +224,6 @@ class AuthService(_Service):
         self._client.client_id = client_id
         return self._store(ops.login_sso(provider, auth_code, client_id, app_target))
 
-    def login_authorization_code(
-        self, code: str, code_verifier: str, redirect_uri: str, client_id: str
-    ) -> TokenResponse:
-        """Exchange an OAuth 2.1 authorization code using PKCE.
-
-        ``redirect_uri`` must match the one used for authorization and
-        ``code_verifier`` is the original verifier behind the request's challenge.
-        """
-        self._client.client_id = client_id
-        return self._store(
-            ops.login_authorization_code(code, code_verifier, redirect_uri, client_id)
-        )
-
     def refresh(self, refresh_token: str) -> TokenResponse:
         """Exchange a refresh token, using the client ID from the last login."""
         return self._store(ops.refresh(refresh_token, self._client.client_id or ""))

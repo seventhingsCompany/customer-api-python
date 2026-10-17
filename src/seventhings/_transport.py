@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import httpx
 
@@ -18,7 +18,6 @@ T = TypeVar("T")
 API_PREFIX = "/customer-api/v1"
 USER_AGENT = f"seventhings-customer-api-python/{__version__}"
 JSON = "application/json"
-FORM = "application/x-www-form-urlencoded"
 
 
 class _Unset:
@@ -64,7 +63,6 @@ class Operation(Generic[T]):
     parse: Callable[[Response], T]
     query: str = ""
     json: Any = UNSET
-    form: Mapping[str, str] | None = None
     files: Mapping[str, Any] | None = None
     accept: str | None = JSON
     authenticated: bool = True
@@ -105,9 +103,6 @@ def build_request(
     if op.json is not UNSET:
         content = encode_json(op.json)
         headers["Content-Type"] = JSON
-    elif op.form is not None:
-        content = urlencode(op.form).encode("ascii")
-        headers["Content-Type"] = FORM
 
     return http.build_request(
         op.method,
